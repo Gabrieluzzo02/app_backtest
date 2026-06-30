@@ -310,7 +310,7 @@ if avvia_simulazione and anno_inizio < anno_fine:
         risultati_out_of_sample_invvol = []
         for anno in range(anno_inizio, anno_fine + 1):
             anno_inizio_train = anno - finestra_train
-            anno_fine_train = anno_test - 1
+            anno_fine_train = anno - 1
             try:
                 rendimenti_train = rendimenti_asset_mensili.loc[str(anno_inizio_train) : str(anno_fine_train)]
                 rendimenti_test = rendimenti_asset_mensili.loc[str(anno)]
