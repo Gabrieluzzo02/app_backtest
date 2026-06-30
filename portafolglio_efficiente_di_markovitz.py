@@ -233,4 +233,207 @@ if avvia_simulazione and anno_inizio < anno_fine:
             df_views = df_views.set_index('Anno_Previsione')
 
         # Esecuzione Black-Litterman
-        market_caps = {"MSFT": 3200, "GOOGL": 2200, "AMZN": 1900, "JPM": 570, "WMT":
+        market_caps = {"MSFT": 3200, "GOOGL": 2200, "AMZN": 1900, "JPM": 570, "WMT": 530, "XOM": 460, "JNJ": 360, "CAT": 170, "NEE": 150, "FCX": 75}
+        risultati_out_of_sample_bl = []
+        delta = 2.5
+        
+        for anno in range(anno_inizio, anno_fine + 1):
+            anno_inizio_train_bl = anno - finestra_train
+            anno_fine_train_bl = anno - 1
+            try:
+                price_train_bl = prezzi_asset_mensili.loc[str(anno_inizio_train_bl) : str(anno_fine_train_bl)]
+                rendimenti_test_bl = rendimenti_asset_mensili.loc[str(anno)]
+                
+                S_bl = risk_models.sample_cov(price_train_bl, frequency=12)
+                rendimenti_impliciti_mercato = black_litterman.market_implied_prior_returns(market_caps, delta, S_bl)
+                
+                if anno in df_views.index:
+                    views_pulite = df_views.loc[anno].dropna()
+                    if not views_pulite.empty:
+                        views_assolute = (views_pulite / 100).to_dict()
+                        bl = BlackLittermanModel(S_bl, pi=rendimenti_impliciti_mercato, absolute_views=views_assolute)
+                        rendimenti_bl = bl.bl_returns()
+                        S_posteriore = bl.bl_cov()
+                        
+                        ef_bl = EfficientFrontier(rendimenti_bl, S_posteriore, weight_bounds=(0, 1))
+                        ef_bl.max_quadratic_utility(risk_aversion=delta)
+                        pesi_series = pd.Series(ef_bl.clean_weights())
+                        
+                        crescita_titoli = (1 + rendimenti_test_bl).cumprod()
+                        valore_portafoglio = (crescita_titoli * pesi_series).sum(axis=1)
+                        rendimenti_portafoglio_bl = valore_portafoglio.pct_change()
+                        rendimenti_portafoglio_bl.iloc[0] = valore_portafoglio.iloc[0] - 1
+                        
+                        risultati_out_of_sample_bl.append(rendimenti_portafoglio_bl)
+            except:
+                continue
+                
+        if risultati_out_of_sample_bl:
+            rendimenti_mark_bl = pd.concat(risultati_out_of_sample_bl)
+            equity_curve_bl = (1 + rendimenti_mark_bl).cumprod()
+        else:
+            equity_curve_bl = pd.Series(dtype=float)
+
+        # ----------------------------------------------------------------------
+        # 4. MOMENTUM OUT-OF-SAMPLE
+        # ----------------------------------------------------------------------
+        risultati_out_of_sample_mom = []
+        top_n = 3
+        for anno in range(anno_inizio, anno_fine + 1):
+            anno_fine_train = anno - 1
+            anno_inizio_train = anno - 2
+            try:
+                # Usa 'YE' (o 'Y') compatibile con le versioni moderne di pandas
+                prezzo_inizio = prezzi_asset_mensili.loc[str(anno_inizio_train)].resample('YE').last().iloc[-1]
+                prezzo_fine = prezzi_asset_mensili.loc[str(anno_fine_train)].resample('YE').last().iloc[-1]
+                rendimento_12m = (prezzo_fine / prezzo_inizio) - 1
+                
+                vincitori = rendimento_12m.sort_values(ascending=False).head(top_n).index
+                pesi_mom = {ticker: (1.0 / top_n if ticker in vincitori else 0.0) for ticker in tickers}
+                
+                price_test = prices.loc[str(anno)]
+                rendimenti_test = price_test.pct_change().dropna()
+                rendimenti_portafoglio_mom = (rendimenti_test * pd.Series(pesi_mom)).sum(axis=1)
+                risultati_out_of_sample_mom.append(rendimenti_portafoglio_mom)
+            except:
+                continue
+
+        if risultati_out_of_sample_mom:
+            rendimenti_totali_mom = pd.concat(risultati_out_of_sample_mom)
+            equity_curve_mom = (1 + rendimenti_totali_mom).cumprod().resample('MS').last()
+        else:
+            equity_curve_mom = pd.Series(dtype=float)
+
+        # ----------------------------------------------------------------------
+        # 5. INVERSE VOLATILITY OUT-OF-SAMPLE
+        # ----------------------------------------------------------------------
+        risultati_out_of_sample_invvol = []
+        for anno in range(anno_inizio, anno_fine + 1):
+            anno_inizio_train = anno - finestra_train
+            anno_fine_train = anno_test - 1
+            try:
+                rendimenti_train = rendimenti_asset_mensili.loc[str(anno_inizio_train) : str(anno_fine_train)]
+                rendimenti_test = rendimenti_asset_mensili.loc[str(anno)]
+                
+                volatilita_titoli = rendimenti_train.std() * np.sqrt(12)
+                inv_vol = 1.0 / volatilita_titoli
+                pesi_invvol_puliti = inv_vol / inv_vol.sum()
+                
+                crescita_titoli = (1 + rendimenti_test).cumprod()
+                matrice_crescita = crescita_titoli.values
+                vettore_pesi = np.array([pesi_invvol_puliti[ticker] for ticker in crescita_titoli.columns])
+                
+                valore_portafoglio = np.dot(matrice_crescita, vettore_pesi)
+                val_series = pd.Series(valore_portafoglio, index=crescita_titoli.index)
+                rendimenti_portafoglio = val_series.pct_change()
+                rendimenti_portafoglio.iloc[0] = val_series.iloc[0] - 1
+                risultati_out_of_sample_invvol.append(rendimenti_portafoglio)
+            except:
+                continue
+
+        if risultati_out_of_sample_invvol:
+            rendimenti_invvol = pd.concat(risultati_out_of_sample_invvol)
+            equity_curve_invvol = (1 + rendimenti_invvol).cumprod()
+        else:
+            equity_curve_invvol = pd.Series(dtype=float)
+
+
+    # ==============================================================================
+    # OUTPUT A SCHERMO (SOLO GRAFICO FINALE E TABELLA INDICATORI)
+    # ==============================================================================
+    st.success("✅ Backtest completato con successo!")
+
+    # 1. Preparazione Dati Grafico e S&P500 Benchmark
+    benchmark_return = benchmark.loc[str(anno_inizio):str(anno_fine)].resample('MS').last().ffill().pct_change().dropna()
+    if not benchmark_return.empty:
+        equity_curve_benchmark = (1 + benchmark_return).cumprod()
+    else:
+        equity_curve_benchmark = pd.Series(dtype=float)
+
+    try:
+        df_confronto= pd.concat([equity_curve_bl, equity_curve_mark, equity_curve_mom, equity_curve_invvol, equity_curve_benchmark], axis=1)
+        df_confronto.columns = ["Black-Litterman", "Markowitz", "Momentum", "Inverse Volatility", "S&P 500"]
+        df_confronto = df_confronto.dropna(how='all').ffill().fillna(1.0)
+
+        # 2. Rendering del Grafico
+        fig, ax = plt.subplots(figsize=(15, 8), dpi=120)
+        fig.patch.set_facecolor("black")
+        ax.set_facecolor("black")
+        
+        colors = ["#FFD700", "#00FFFF", "#7CFC00", "#FF69B4", "#8A2BE2"]
+        
+        for i, col in enumerate(df_confronto.columns):
+            if not df_confronto[col].isna().all():
+                ax.plot(df_confronto.index, df_confronto[col], lw=2.6, color=colors[i], label=col)
+                ax.scatter(df_confronto.index[-1], df_confronto[col].iloc[-1], s=50, color=colors[i], edgecolors="white", linewidth=0.8, zorder=5)
+
+        ax.set_title("Confronto Equity Curves", fontsize=22, color="white", fontweight="bold", loc="left", pad=20)
+        ax.set_ylabel("Portfolio Value (Base 1)", fontsize=14, color="white")
+        ax.set_xlabel("Time", fontsize=14, color="white")
+        
+        ax.grid(True, which="major", color="#444444", linewidth=0.7)
+        ax.minorticks_on()
+        ax.grid(True, which="minor", color="#222222", linewidth=0.4)
+        ax.tick_params(colors="white", labelsize=12)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color("white")
+        ax.spines["bottom"].set_color("white")
+        
+        leg = ax.legend(loc="upper left", frameon=False, fontsize=12)
+        for text in leg.get_texts():
+            text.set_color("white")
+            
+        ax.yaxis.set_major_formatter(mtick.StrMethodFormatter('{x:,.2f}'))
+        plt.tight_layout()
+        
+        st.pyplot(fig)
+
+        # 3. Creazione e Rendering della Tabella
+        st.subheader("📉 Analisi Metriche Portafoglio e Scenari di Crisi")
+        eventi = {
+            "Intero Periodo Selezionato": (f"{anno_inizio}-01-01", f"{anno_fine}-12-31"),
+            "Euro Debt Crisis aftermath": ("2012-01-01", "2012-12-31"),
+            "Taper Tantrum": ("2013-05-01", "2013-09-30"),
+            "China Devaluation shock": ("2015-08-01", "2015-10-01"),
+            "COVID Crash": ("2020-02-01", "2020-04-30"),
+            "Inflation + Rates shock": ("2022-01-01", "2023-03-31"),
+            "AI / Tech rally phase": ("2023-01-01", "2024-12-31")
+        }
+        
+        results = []
+        for event, (start, end) in eventi.items():
+            try:
+                df_event = df_confronto.loc[start:end]
+                if len(df_event) > 1:
+                    for col in df_event.columns:
+                        if not df_event[col].isna().all():
+                            stats = portfolio_stats(df_event[col])
+                            stats["Scenario Temporale"] = event
+                            stats["Strategia"] = col
+                            results.append(stats)
+            except Exception:
+                continue
+                
+        if results:
+            df_event_analysis = pd.DataFrame(results)
+            cols = ['Scenario Temporale', 'Strategia', 'Rendimento Totale', 'Volatilità', 'Sharpe Ratio', 'Max Drawdown']
+            df_event_analysis = df_event_analysis[cols]
+            
+            st.dataframe(
+                df_event_analysis.style.format({
+                    'Rendimento Totale': '{:.2%}',
+                    'Volatilità': '{:.2%}',
+                    'Sharpe Ratio': '{:.2f}',
+                    'Max Drawdown': '{:.2%}'
+                }),
+                use_container_width=True,
+                height=600
+            )
+
+    except Exception as e:
+        st.error("Si è verificato un errore durante la generazione del grafico. Assicurati che il range di date selezionato contenga dati di trading validi.")
+
+else:
+    if not avvia_simulazione:
+        st.info("👈 Seleziona gli anni desiderati nella barra laterale a sinistra e clicca su 'Avvia Backtest' per visualizzare i risultati.")
