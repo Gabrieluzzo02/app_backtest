@@ -28,11 +28,39 @@ st.markdown("""
 Questo strumento calcola e confronta le performance di 4 diversi modelli di allocazione del portafoglio 
 (Markowitz, Black-Litterman, Momentum, Inverse Volatility) rispetto all'indice S&P 500.
 """)
+import streamlit as st
+import pandas as pd
 
+from core.asset_search import names_to_tickers
+
+
+st.title("Backtesting App")
+
+assets = pd.read_csv("data/assets_universe.csv")
+
+user_input = st.sidebar.text_input(
+    "Scrivi i nomi delle aziende",
+    placeholder="Apple, Microsoft, Enel"
+)
+
+if user_input:
+    company_names = [
+        x.strip()
+        for x in user_input.split(",")
+        if x.strip()
+    ]
+
+    tickers, not_found = names_to_tickers(company_names, assets)
+
+    st.write("Ticker trovati:")
+    st.write(tickers)
+
+    if not_found:
+        st.warning(f"Non trovati: {not_found}")
 # ==============================================================================
 # PARAMETRI DEGLI ASSET E INDICATORI
 # ==============================================================================
-tickers = ['MSFT', 'JPM', 'JNJ', 'AMZN', 'WMT', 'XOM', 'CAT', 'NEE', 'FCX', 'GOOGL']
+#tickers = ['MSFT', 'JPM', 'JNJ', 'AMZN', 'WMT', 'XOM', 'CAT', 'NEE', 'FCX', 'GOOGL']
 tickers_perc = ["FEDFUNDS", "UNRATE"]
 tickers_nonperc = ["UMCSENT"]
 ticker_vix = ['^VIX']
